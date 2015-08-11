@@ -1,5 +1,5 @@
 /**************************************************************************
-* Microsoft COCO Toolbox.      version 2.0
+* Microsoft COCO Toolbox.      Version 1.0
 * Data, paper, and tutorials available at:  http://mscoco.org/
 * Code written by Piotr Dollar and Tsung-Yi Lin, 2015.
 * Licensed under the Simplified BSD License [see coco/license.txt]
@@ -11,17 +11,15 @@
 #include <iomanip>
 #include <sstream>
 typedef std::ostringstream ostrm;
-typedef unsigned long siz;
-typedef unsigned short ushort;
 
-siz length( const JsonValue &a ) {
+int length( const JsonValue &a ) {
   // get number of elements in JSON_ARRAY or JSON_OBJECT
-  siz k=0; auto n=a.toNode(); while(n) { k++; n=n->next; } return k;
+  int k=0; auto n=a.toNode(); while(n) { k++; n=n->next; } return k;
 }
 
 bool isRegularObjArray( const JsonValue &a ) {
   // check if all JSON_OBJECTs in JSON_ARRAY have the same fields
-  JsonValue o=a.toNode()->value; siz k, n; const char **keys;
+  JsonValue o=a.toNode()->value; int k, n; const char **keys;
   n=length(o); keys=new const char*[n];
   k=0; for(auto j:o) keys[k++]=j->key;
   for( auto i:a ) {
@@ -33,14 +31,14 @@ bool isRegularObjArray( const JsonValue &a ) {
 
 mxArray* json( const JsonValue &o ) {
   // convert JsonValue to Matlab mxArray
-  siz k, m, n; mxArray *M; const char **keys;
+  int k, m, n; mxArray *M; const char **keys;
   switch( o.getTag() ) {
     case JSON_NUMBER:
       return mxCreateDoubleScalar(o.toNumber());
     case JSON_STRING:
       return mxCreateString(o.toString());
     case JSON_ARRAY: {
-      if(!o.toNode()) return mxCreateDoubleMatrix(1,0,mxREAL);
+      if(!o.toNode()) return mxCreateCellMatrix(1,0);
       JsonValue o0=o.toNode()->value; JsonTag tag=o0.getTag();
       n=length(o); bool isRegular=true;
       for(auto i:o) isRegular=isRegular && i->value.getTag()==tag;
@@ -77,14 +75,14 @@ mxArray* json( const JsonValue &o ) {
   }
 }
 
-template<class T, class C> ostrm& json( ostrm &S, T *A, siz n ) {
+template<class T, class C> ostrm& json( ostrm &S, T *A, int n ) {
   // convert numeric array to JSON string with casting
   if(n==0) { S<<"[]"; return S; } if(n==1) { S<<C(A[0]); return S; }
-  S<<"["; for(siz i=0; i<n-1; i++) S<<C(A[i])<<",";
+  S<<"["; for(int i=0; i<n-1; i++) S<<C(A[i])<<",";
   S<<C(A[n-1]); S<<"]"; return S;
 }
 
-template<class T> ostrm& json( ostrm &S, T *A, siz n ) {
+template<class T> ostrm& json( ostrm &S, T *A, int n ) {
   // convert numeric array to JSON string without casting
   return json<T,T>(S,A,n);
 }
@@ -102,7 +100,7 @@ ostrm& json( ostrm &S, const char *A ) {
 
 ostrm& json( ostrm& S, const mxArray *M ) {
   // convert Matlab mxArray to JSON string
-  siz i, j, m, n=mxGetNumberOfElements(M);
+  int i, j, m, n=mxGetNumberOfElements(M);
   void *A=mxGetData(M); ostrm *nms;
   switch( mxGetClassID(M) ) {
     case mxDOUBLE_CLASS:  return json(S,(double*)   A,n);
@@ -142,9 +140,7 @@ void mexFunction( int nl, mxArray *pl[], int nr, const mxArray *pr[] )
   if( nl>1 ) mexErrMsgTxt("One output expected.");
   if( mxGetClassID(pr[0])==mxCHAR_CLASS ) {
     // object = mexFunction( string )
-    ushort *c=(ushort*) mxGetData(pr[0]); char* str; siz n;
-    n=mxGetNumberOfElements(pr[0]); str=(char*) mxMalloc(n+1);
-    for( siz i=0; i<n; i++ ) str[i]=c[i]; str[n]=0;
+    char *str = mxArrayToString(pr[0]);
     char *endptr; JsonValue value; JsonAllocator allocator;
     int status = jsonParse(str, &endptr, &value, allocator);
     if( status != JSON_OK) mexErrMsgTxt(jsonStrError(status));
@@ -152,8 +148,6 @@ void mexFunction( int nl, mxArray *pl[], int nr, const mxArray *pr[] )
   } else {
     // string = mexFunction( object )
     ostrm S; S << std::setprecision(10); json(S,pr[0]);
-    std::string str=S.str(); mwSize n[2]={1,str.size()};
-    pl[0]=mxCreateCharArray(2,n); ushort *c=(ushort*) mxGetData(pl[0]);
-    for( siz i=0; i<n[1]; i++ ) c[i]=str[i];
+    pl[0] = mxCreateString( S.str().c_str() );
   }
 }

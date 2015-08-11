@@ -19,26 +19,23 @@ classdef CocoApi
   %
   % The following API functions are defined:
   %  CocoApi    - Load COCO annotation file and prepare data structures.
-  %  decodeMask - Decode binary mask M encoded via run-length encoding.
-  %  encodeMask - Encode binary mask M using run-length encoding.
   %  getAnnIds  - Get ann ids that satisfy given filter conditions.
   %  getCatIds  - Get cat ids that satisfy given filter conditions.
   %  getImgIds  - Get img ids that satisfy given filter conditions.
   %  loadAnns   - Load anns with the specified ids.
   %  loadCats   - Load cats with the specified ids.
   %  loadImgs   - Load imgs with the specified ids.
-  %  segToMask  - Convert polygon segmentation to binary mask.
   %  showAnns   - Display the specified annotations.
   %  loadRes    - Load algorithm results and create API for accessing them.
+  %  download   - Download COCO images from mscoco.org server.
   % Throughout the API "ann"=annotation, "cat"=category, and "img"=image.
   % Help on each functions can be accessed by: "help CocoApi>function".
   %
-  % See also cocoDemo, CocoApi>CocoApi, CocoApi>decodeMask,
-  % CocoApi>encodeMask, CocoApi>getAnnIds, CocoApi>getCatIds,
+  % See also CocoApi>CocoApi, CocoApi>getAnnIds, CocoApi>getCatIds,
   % CocoApi>getImgIds, CocoApi>loadAnns, CocoApi>loadCats,
-  % CocoApi>loadImgs, CocoApi>segToMask, CocoApi>showAnns
+  % CocoApi>loadImgs, CocoApi>showAnns, CocoApi>loadRes, CocoApi>download
   %
-  % Microsoft COCO Toolbox.      Version 1.0
+  % Microsoft COCO Toolbox.      version 2.0
   % Data, paper, and tutorials available at:  http://mscoco.org/
   % Code written by Piotr Dollar and Tsung-Yi Lin, 2015.
   % Licensed under the Simplified BSD License [see coco/license.txt]
@@ -63,20 +60,20 @@ classdef CocoApi
       fprintf('Loading and preparing annotations... '); clk=clock;
       if(isstruct(annFile)), coco.data=annFile; else
         coco.data=gason(fileread(annFile)); end
-      anns = coco.data.annotations;
-      if( strcmp(coco.data.type,'instances') )
-        is.annCatIds = [anns.category_id]';
-        is.annAreas = [anns.area]';
-        is.annIscrowd = [anns.iscrowd]';
-      end
-      is.annIds = [anns.id]';
-      is.annIdsMap = makeMap(is.annIds);
-      is.annImgIds = [anns.image_id]';
       is.imgIds = [coco.data.images.id]';
       is.imgIdsMap = makeMap(is.imgIds);
-      is.imgAnnIdsMap = makeMultiMap(is.imgIds,...
-        is.imgIdsMap,is.annImgIds,is.annIds,0);
-      if( strcmp(coco.data.type,'instances') )
+      if( isfield(coco.data,'annotations') )
+        ann=coco.data.annotations; o=[ann.image_id];
+        if(isfield(ann,'category_id')), o=o*1e10+[ann.category_id]; end
+        [~,o]=sort(o); ann=ann(o); coco.data.annotations=ann;
+        s={'category_id','area','iscrowd','id','image_id'};
+        t={'annCatIds','annAreas','annIscrowd','annIds','annImgIds'};
+        for f=1:5, if(isfield(ann,s{f})), is.(t{f})=[ann.(s{f})]'; end; end
+        is.annIdsMap = makeMap(is.annIds);
+        is.imgAnnIdsMap = makeMultiMap(is.imgIds,...
+          is.imgIdsMap,is.annImgIds,is.annIds,0);
+      end
+      if( isfield(coco.data,'categories') )
         is.catIds = [coco.data.categories.id]';
         is.catIdsMap = makeMap(is.catIds);
         is.catImgIdsMap = makeMultiMap(is.catIds,...
@@ -225,7 +222,7 @@ classdef CocoApi
       imgs = coco.data.images([ids{:}]);
     end
     
-    function hs = showAnns( coco, anns )
+    function hs = showAnns( ~, anns )
       % Display the specified annotations.
       %
       % USAGE
@@ -237,24 +234,27 @@ classdef CocoApi
       % OUTPUTS
       %  hs         - handles to segment graphic objects
       n=length(anns); if(n==0), return; end
-      if( strcmp(coco.data.type,'instances') )
+      if( any(isfield(anns,{'segmentation','bbox'})) )
+        if(~isfield(anns,'iscrowd')), [anns(:).iscrowd]=deal(0); end
+        if(~isfield(anns,'segmentation')), S={anns.bbox}; %#ok<ALIGN>
+          for i=1:n, x=S{i}(1); w=S{i}(3); y=S{i}(2); h=S{i}(4);
+            anns(i).segmentation={[x,y,x,y+h,x+w,y+h,x+w,y]}; end; end
         S={anns.segmentation}; hs=zeros(10000,1); k=0; hold on;
         pFill={'FaceAlpha',.4,'LineWidth',3};
         for i=1:n
           if(anns(i).iscrowd), C=[.01 .65 .40]; else C=rand(1,3); end
-          if(isstruct(S{i})), M=double(coco.decodeMask(S{i})); k=k+1;
+          if(isstruct(S{i})), M=double(MaskApi.decode(S{i})); k=k+1;
             hs(k)=imagesc(cat(3,M*C(1),M*C(2),M*C(3)),'Alphadata',M*.5);
-          else for j=1:length(S{i}), P=S{i}{j}+1; k=k+1;
+          else for j=1:length(S{i}), P=S{i}{j}+.5; k=k+1;
               hs(k)=fill(P(1:2:end),P(2:2:end),C,pFill{:}); end
           end
         end
         hs=hs(1:k); hold off;
-      elseif( strcmp(coco.data.type,'captions') )
+      elseif( isfield(anns,'caption') )
         S={anns.caption};
         for i=1:n, S{i}=[int2str(i) ') ' S{i} '\newline']; end
         S=[S{:}]; title(S,'FontSize',12);
       end
-      hold off;
     end
     
     function cocoRes = loadRes( coco, resFile )
@@ -273,81 +273,38 @@ classdef CocoApi
       % OUTPUTS
       %  cocoRes    - initialized results API
       fprintf('Loading and preparing results...     '); clk=clock;
-      cdata=coco.data; R=gason(fileread(resFile)); M=length(R);
-      if(~all(ismember(unique([R.image_id]),unique([cdata.images.id]))))
-        error('Results do not correspond to current coco set'); end
+      cdata=coco.data; R=gason(fileread(resFile)); m=length(R);
+      valid=ismember([R.image_id],[cdata.images.id]);
+      if(~all(valid)), error('Results provided for invalid images.'); end
       type={'segmentation','bbox','caption'}; type=type{isfield(R,type)};
       if(strcmp(type,'caption'))
-        for i=1:M, R(i).id=i; end; imgs=cdata.images;
+        for i=1:m, R(i).id=i; end; imgs=cdata.images;
         cdata.images=imgs(ismember([imgs.id],[R.image_id]));
-      elseif(strcmp(type,'bbox'))
-        for i=1:M, bb=R(i).bbox;
-          x1=bb(1); x2=bb(1)+bb(3); y1=bb(2); y2=bb(2)+bb(4);
-          R(i).segmentation = {[x1 y1 x1 y2 x2 y2 x2 y1]};
-          R(i).area=bb(3)*bb(4); R(i).id=i; R(i).iscrowd=0;
-        end
-      elseif(strcmp(type,'segmentation'))
-        for i=1:M
-          R(i).area=sum(R(i).segmentation.counts(2:2:end));
-          R(i).bbox=[]; R(i).id=i; R(i).iscrowd=0;
-        end
+      else
+        assert(all(isfield(R,{'category_id','score',type})));
+        s=cat(1,R.(type)); if(strcmp(type,'bbox'))
+          a=s(:,3).*s(:,4); else a=MaskApi.area(s); end
+        for i=1:m, R(i).area=a(i); R(i).id=i; end
       end
       fprintf('DONE (t=%0.2fs).\n',etime(clock,clk));
       cdata.annotations=R; cocoRes=CocoApi(cdata);
     end
-  end
-  
-  methods( Static )
-    function M = decodeMask( R )
-      % Decode binary mask M encoded via run-length encoding.
-      %
-      % USAGE
-      %  M = CocoApi.decodeMask( R )
-      %
-      % INPUTS
-      %  R          - run-length encoding of binary mask
-      %
-      % OUTPUTS
-      %  M          - decoded binary mask
-      M=zeros(R.size,'uint8'); k=1; n=length(R.counts);
-      for i=2:2:n, for j=1:R.counts(i-1), k=k+1; end;
-        for j=1:R.counts(i), M(k)=1; k=k+1; end; end
-    end
     
-    function R = encodeMask( M )
-      % Encode binary mask M using run-length encoding.
+    function download( coco, tarDir )
+      % Download COCO images from mscoco.org server.
       %
       % USAGE
-      %  R = CocoApi.encodeMask( M )
+      %  coco.download( tarDir )
       %
       % INPUTS
-      %  M          - binary mask to encode
-      %
-      % OUTPUTS
-      %  R          - run-length encoding of binary mask
-      R.size=size(M); if(isempty(M)), R.counts=[]; return; end
-      D=M(2:end)~=M(1:end-1); is=uint32([find(D) numel(M)]);
-      R.counts=[is(1) diff(is)]; if(M(1)==1), R.counts=[0 R.counts]; end
-    end
-    
-    function M = segToMask( S, h, w, g )
-      % Convert polygon segmentation to binary mask.
-      %
-      % USAGE
-      %  M = CocoApi.segToMask( S, h, w, [g] )
-      %
-      % INPUTS
-      %  S          - polygon segmentation mask
-      %  h          - target mask height
-      %  w          - target mask width
-      %  g          - [1] controls mask granularity
-      %
-      % OUTPUTS
-      %  M          - binary mask (or continuous mask if g>0)
-      if(nargin<4), g=1; end; M=single(0); n=length(S);
-      for i=1:n, x=S{i}(1:2:end)+1; y=S{i}(2:2:end)+1;
-        M = M + poly2mask(x*g,y*g,h*g,w*g); end
-      if( g~=1 ), M=imresize(M,1/g,'bilinear'); end
+      %  tarDir     - COCO results filename
+      fs={coco.data.images.file_name}; n=length(fs);
+      urls={coco.data.images.coco_url}; do=true(1,n);
+      for i=1:n, fs{i}=[tarDir '/' fs{i}]; do(i)=~exist(fs{i},'file'); end
+      fs=fs(do); urls=urls(do); n=length(fs); if(n==0), return; end
+      if(~exist(tarDir,'dir')), mkdir(tarDir); end
+      msg='downloaded %i/%i images (t=%.1fs)\n'; t=tic;
+      for i=1:n, websave(fs{i},urls{i}); fprintf(msg,i,n,toc(t)); end
     end
   end
   

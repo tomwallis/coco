@@ -30,6 +30,7 @@ __version__ = '1.0.1'
 #  segToMask  - Convert polygon segmentation to binary mask.
 #  showAnns   - Display the specified annotations.
 #  loadRes    - Load algorithm results and create API for accessing them.
+#  download   - Download COCO images from mscoco.org server.
 # Throughout the API "ann"=annotation, "cat"=category, and "img"=image.
 # Help on each functions can be accessed by: "help COCO>function".
 
@@ -38,19 +39,24 @@ __version__ = '1.0.1'
 # COCO>getImgIds, COCO>loadAnns, COCO>loadCats,
 # COCO>loadImgs, COCO>segToMask, COCO>showAnns
 
-# Microsoft COCO Toolbox.      Version 1.0
+# Microsoft COCO Toolbox.      version 2.0
 # Data, paper, and tutorials available at:  http://mscoco.org/
 # Code written by Piotr Dollar and Tsung-Yi Lin, 2014.
 # Licensed under the Simplified BSD License [see bsd.txt]
 
 import json
 import datetime
+import time
 import matplotlib.pyplot as plt
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Polygon
 import numpy as np
 from skimage.draw import polygon
+import urllib
 import copy
+import itertools
+import mask
+import os
 
 class COCO:
     def __init__(self, annotation_file=None):
@@ -65,32 +71,37 @@ class COCO:
         self.anns = []
         self.imgToAnns = {}
         self.catToImgs = {}
-        self.imgs = []
-        self.cats = []
+        self.imgs = {}
+        self.cats = {}
         if not annotation_file == None:
             print 'loading annotations into memory...'
-            time_t = datetime.datetime.utcnow()
+            tic = time.time()
             dataset = json.load(open(annotation_file, 'r'))
-            print datetime.datetime.utcnow() - time_t
+            print 'Done (t=%0.2fs)'%(time.time()- tic)
             self.dataset = dataset
             self.createIndex()
 
     def createIndex(self):
         # create index
         print 'creating index...'
-        imgToAnns = {ann['image_id']: [] for ann in self.dataset['annotations']}
-        anns =      {ann['id']:       [] for ann in self.dataset['annotations']}
-        for ann in self.dataset['annotations']:
-            imgToAnns[ann['image_id']] += [ann]
-            anns[ann['id']] = ann
+        anns = {}
+        imgToAnns = {}
+        catToImgs = {}
+        cats = {}
+        imgs = {}
+        if 'annotations' in self.dataset:
+            imgToAnns = {ann['image_id']: [] for ann in self.dataset['annotations']}
+            anns =      {ann['id']:       [] for ann in self.dataset['annotations']}
+            for ann in self.dataset['annotations']:
+                imgToAnns[ann['image_id']] += [ann]
+                anns[ann['id']] = ann
 
-        imgs      = {im['id']: {} for im in self.dataset['images']}
-        for img in self.dataset['images']:
-            imgs[img['id']] = img
+        if 'images' in self.dataset:
+            imgs      = {im['id']: {} for im in self.dataset['images']}
+            for img in self.dataset['images']:
+                imgs[img['id']] = img
 
-        cats = []
-        catToImgs = []
-        if self.dataset['type'] == 'instances':
+        if 'categories' in self.dataset:
             cats = {cat['id']: [] for cat in self.dataset['categories']}
             for cat in self.dataset['categories']:
                 cats[cat['id']] = cat
@@ -131,16 +142,15 @@ class COCO:
             anns = self.dataset['annotations']
         else:
             if not len(imgIds) == 0:
-                anns = sum([self.imgToAnns[imgId] for imgId in imgIds if imgId in self.imgToAnns],[])
+                # this can be changed by defaultdict
+                lists = [self.imgToAnns[imgId] for imgId in imgIds if imgId in self.imgToAnns]
+                anns = list(itertools.chain.from_iterable(lists))
             else:
                 anns = self.dataset['annotations']
             anns = anns if len(catIds)  == 0 else [ann for ann in anns if ann['category_id'] in catIds]
             anns = anns if len(areaRng) == 0 else [ann for ann in anns if ann['area'] > areaRng[0] and ann['area'] < areaRng[1]]
-        if self.dataset['type'] == 'instances':
-            if not iscrowd == None:
-                ids = [ann['id'] for ann in anns if ann['iscrowd'] == iscrowd]
-            else:
-                ids = [ann['id'] for ann in anns]
+        if not iscrowd == None:
+            ids = [ann['id'] for ann in anns if ann['iscrowd'] == iscrowd]
         else:
             ids = [ann['id'] for ann in anns]
         return ids
@@ -229,7 +239,11 @@ class COCO:
         """
         if len(anns) == 0:
             return 0
-        if self.dataset['type'] == 'instances':
+        if 'segmentation' in anns[0]:
+            datasetType = 'instances'
+        elif 'caption' in anns[0]:
+            datasetType = 'captions'
+        if datasetType == 'instances':
             ax = plt.gca()
             polygons = []
             color = []
@@ -243,18 +257,23 @@ class COCO:
                         color.append(c)
                 else:
                     # mask
-                    mask = COCO.decodeMask(ann['segmentation'])
-                    img = np.ones( (mask.shape[0], mask.shape[1], 3) )
+                    t = self.imgs[ann['image_id']]
+                    if type(ann['segmentation']['counts']) == list:
+                        rle = mask.frPyObjects([ann['segmentation']], t['height'], t['width'])
+                    else:
+                        rle = [ann['segmentation']]
+                    m = mask.decode(rle)
+                    img = np.ones( (m.shape[0], m.shape[1], 3) )
                     if ann['iscrowd'] == 1:
                         color_mask = np.array([2.0,166.0,101.0])/255
                     if ann['iscrowd'] == 0:
                         color_mask = np.random.random((1, 3)).tolist()[0]
                     for i in range(3):
                         img[:,:,i] = color_mask[i]
-                    ax.imshow(np.dstack( (img, mask*0.5) ))
+                    ax.imshow(np.dstack( (img, m*0.5) ))
             p = PatchCollection(polygons, facecolors=color, edgecolors=(0,0,0,1), linewidths=3, alpha=0.4)
             ax.add_collection(p)
-        if self.dataset['type'] == 'captions':
+        elif datasetType == 'captions':
             for ann in anns:
                 print ann['caption']
 
@@ -266,12 +285,11 @@ class COCO:
         """
         res = COCO()
         res.dataset['images'] = [img for img in self.dataset['images']]
-        res.dataset['info'] = copy.deepcopy(self.dataset['info'])
-        res.dataset['type'] = copy.deepcopy(self.dataset['type'])
-        res.dataset['licenses'] = copy.deepcopy(self.dataset['licenses'])
+        # res.dataset['info'] = copy.deepcopy(self.dataset['info'])
+        # res.dataset['licenses'] = copy.deepcopy(self.dataset['licenses'])
 
         print 'Loading and preparing results...     '
-        time_t = datetime.datetime.utcnow()
+        tic = time.time()
         anns    = json.load(open(resFile))
         assert type(anns) == list, 'results in not an array of objects'
         annsImgIds = [ann['image_id'] for ann in anns]
@@ -281,90 +299,52 @@ class COCO:
             imgIds = set([img['id'] for img in res.dataset['images']]) & set([ann['image_id'] for ann in anns])
             res.dataset['images'] = [img for img in res.dataset['images'] if img['id'] in imgIds]
             for id, ann in enumerate(anns):
-                ann['id'] = id
+                ann['id'] = id+1
         elif 'bbox' in anns[0] and not anns[0]['bbox'] == []:
             res.dataset['categories'] = copy.deepcopy(self.dataset['categories'])
             for id, ann in enumerate(anns):
                 bb = ann['bbox']
                 x1, x2, y1, y2 = [bb[0], bb[0]+bb[2], bb[1], bb[1]+bb[3]]
-                ann['segmentation'] = [[x1, y1, x1, y2, x2, y2, x2, y1]]
+                if not 'segmentation' in ann:
+                    ann['segmentation'] = [[x1, y1, x1, y2, x2, y2, x2, y1]]
                 ann['area'] = bb[2]*bb[3]
-                ann['id'] = id
+                ann['id'] = id+1
                 ann['iscrowd'] = 0
         elif 'segmentation' in anns[0]:
             res.dataset['categories'] = copy.deepcopy(self.dataset['categories'])
             for id, ann in enumerate(anns):
-                ann['area']=sum(ann['segmentation']['counts'][2:-1:2])
-                ann['bbox'] = []
-                ann['id'] = id
+                # now only support compressed RLE format as segmentation results
+                ann['area'] = mask.area([ann['segmentation']])[0]
+                if not 'bbox' in ann:
+                    ann['bbox'] = mask.toBbox([ann['segmentation']])[0]
+                ann['id'] = id+1
                 ann['iscrowd'] = 0
-        print 'DONE (t=%0.2fs)'%((datetime.datetime.utcnow() - time_t).total_seconds())
+        print 'DONE (t=%0.2fs)'%(time.time()- tic)
 
         res.dataset['annotations'] = anns
         res.createIndex()
         return res
 
-
-    @staticmethod
-    def decodeMask(R):
-        """
-        Decode binary mask M encoded via run-length encoding.
-        :param   R (object RLE)    : run-length encoding of binary mask
-        :return: M (bool 2D array) : decoded binary mask
-        """
-        N = len(R['counts'])
-        M = np.zeros( (R['size'][0]*R['size'][1], ))
-        n = 0
-        val = 1
-        for pos in range(N):
-            val = not val
-            for c in range(R['counts'][pos]):
-                R['counts'][pos]
-                M[n] = val
-                n += 1
-        return M.reshape((R['size']), order='F')
-
-    @staticmethod
-    def encodeMask(M):
-        """
-        Encode binary mask M using run-length encoding.
-        :param   M (bool 2D array)  : binary mask to encode
-        :return: R (object RLE)     : run-length encoding of binary mask
-        """
-        [h, w] = M.shape
-        M = M.flatten(order='F')
-        N = len(M)
-        counts_list = []
-        pos = 0
-        # counts
-        counts_list.append(1)
-        diffs = np.logical_xor(M[0:N-1], M[1:N])
-        for diff in diffs:
-            if diff:
-                pos +=1
-                counts_list.append(1)
-            else:
-                counts_list[pos] += 1
-        # if array starts from 1. start with 0 counts for 0
-        if M[0] == 1:
-            counts_list = [0] + counts_list
-        return {'size':      [h, w],
-               'counts':    counts_list ,
-               }
-
-    @staticmethod
-    def segToMask( S, h, w ):
-         """
-         Convert polygon segmentation to binary mask.
-         :param   S (float array)   : polygon segmentation mask
-         :param   h (int)           : target mask height
-         :param   w (int)           : target mask width
-         :return: M (bool 2D array) : binary mask
-         """
-         M = np.zeros((h,w), dtype=np.bool)
-         for s in S:
-             N = len(s)
-             rr, cc = polygon(np.array(s[1:N:2]).clip(max=h-1), \
-                              np.array(s[0:N:2]).clip(max=w-1)) # (y, x)
-             M[rr, cc] = 1
-         return M
+    def download( self, tarDir = None, imgIds = [] ):
+        '''
+        Download COCO images from mscoco.org server.
+        :param tarDir (str): COCO results directory name
+               imgIds (list): images to be downloaded
+        :return:
+        '''
+        if tarDir is None:
+            print 'Please specify target directory'
+            return -1
+        if len(imgIds) == 0:
+            imgs = self.imgs.values()
+        else:
+            imgs = self.loadImgs(imgIds)
+        N = len(imgs)
+        if not os.path.exists(tarDir):
+            os.makedirs(tarDir)
+        for i, img in enumerate(imgs):
+            tic = time.time()
+            fname = os.path.join(tarDir, img['file_name'])
+            if not os.path.exists(fname):
+                urllib.urlretrieve(img['coco_url'], fname)
+            print 'downloaded %d/%d images (t=%.1fs)'%(i, N, time.time()- tic)
